@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="kk"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Құпиясөзді жаңарту | TIL MURA AI</title><style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;font:17px system-ui,Arial;color:#f7e9cc;background:radial-gradient(circle at top,#344456,#101c2c 70%);display:grid;place-items:center;padding:24px}main{width:100%;max-width:520px;border:1px solid #c9a45b;border-radius:24px;background:#18293c;padding:30px}h1{font-size:26px;color:#f5d48c;text-align:center}p{line-height:1.6}label{display:block;margin:20px 0 8px}input,button{width:100%;padding:15px;font:inherit;border-radius:12px}input{border:1px solid #aa956c;background:#0f1c2c;color:#fff}button{margin-top:24px;background:#d4aa5f;color:#142033;border:0;font-weight:700;cursor:pointer}button:disabled{opacity:.5;cursor:default}a{color:#f0cf8b}#status{overflow-wrap:anywhere}small{display:block;margin-top:12px;color:#d6d2c8}
+</style></head><body><main><p style="text-align:center;color:#d5aa60">❖ TIL MURA AI ❖</p><h1>Құпиясөзді жаңарту</h1><p id="status" role="status" aria-live="polite">Сілтеме тексерілуде…</p><form id="reset" hidden><label for="new-password">Жаңа құпиясөз</label><input id="new-password" type="password" autocomplete="new-password" minlength="12" required><small>Кемінде 12 таңба. Жаңа құпиясөзді сақтап алыңыз.</small><label for="repeat-password">Құпиясөзді қайталаңыз</label><input id="repeat-password" type="password" autocomplete="new-password" minlength="12" required><button id="save">Жаңа құпиясөзді сақтау</button></form><p><a href="./?admin=1">Ұйымдастырушы кабинетіне өту</a></p></main><script>
+'use strict';
+const fragment = new URLSearchParams(location.hash.slice(1));
+let recoveryToken = fragment.get('type') === 'recovery' ? fragment.get('access_token') : null;
+const recoveryError = fragment.has('error') || new URLSearchParams(location.search).has('error');
+// Remove tokens immediately; never store them or load third-party resources.
+history.replaceState(null, '', location.pathname);
+let projectUrl, publishableKey;
+const status = document.getElementById('status');
+const form = document.getElementById('reset');
+const button = document.getElementById('save');
+function readConfig(source) {
+  const url = source.match(/\bconst\s+SUPABASE_URL\s*=\s*(['"])([^'"\r\n]+)\1\s*;/);
+  const key = source.match(/\bconst\s+SUPABASE_ANON_KEY\s*=\s*(['"])([^'"\r\n]+)\1\s*;/);
+  if (!url || !key) throw Error('app.js қосылымы табылмады.');
+  const parsed = new URL(url[2]);
+  if (parsed.protocol !== 'https:' || !/^[a-z0-9-]+\.supabase\.co$/.test(parsed.hostname) || parsed.pathname !== '/' || parsed.search || parsed.hash || parsed.username || parsed.password || parsed.port) throw Error('app.js ішіндегі Project URL мәнін тексеріңіз.');
+  if (key[2].startsWith('sb_secret_') || key[2].includes('YOUR_')) throw Error('app.js ішінде Publishable key болуы қажет.');
+  if (!key[2].startsWith('sb_publishable_')) {
+    try {
+      const claims = JSON.parse(atob(key[2].split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+      if (claims.role !== 'anon') throw Error();
+    } catch (_) { throw Error('app.js ішінде Publishable немесе anon кілтін пайдаланыңыз.'); }
+  }
+  return {url:parsed.origin, key:key[2]};
+}
+async function authRequest(method, body) {
+  const response = await fetch(projectUrl + '/auth/v1/user', {
+    method, headers:{apikey:publishableKey,Authorization:'Bearer ' + recoveryToken,'Content-Type':'application/json'},
+    ...(body ? {body:JSON.stringify(body)} : {})
+  });
+  const data = await response.json().catch(()=>({}));
+  if (!response.ok) {
+    if (response.status === 401 || response.status === 403) {
+      recoveryToken = null; form.hidden = true;
+      throw Error('Сілтеменің мерзімі өткен. Supabase-тен жаңа қалпына келтіру хатын жіберіңіз.');
+    }
+    throw Error(data.msg || data.message || data.error_description || 'Құпиясөз сақталмады. Қайта көріңіз.');
+  }
+  return data;
+}
+async function initialize() {
+  if (recoveryError || !recoveryToken) {
+    status.textContent='Бұл бетті Supabase-тен келген жаңа хаттағы Reset password сілтемесі арқылы ашыңыз. Ескі сілтеме қолданылған немесе мерзімі өткен болуы мүмкін.';
+    return;
+  }
+  try {
+    // Reuse the owner's already configured same-origin file without executing it.
+    const response = await fetch('./app.js', {cache:'no-store',credentials:'same-origin'});
+    if (!response.ok) throw Error('app.js файлы жүктелмеді. Екі файл бір папкада болуы қажет.');
+    const config = readConfig(await response.text());
+    projectUrl=config.url; publishableKey=config.key;
+    await authRequest('GET');
+    status.textContent='Жаңа құпиясөзді екі рет енгізіңіз.';
+    form.hidden=false;
+  } catch(e) { status.textContent=e.message; }
+}
+form.onsubmit = async event => {
+  event.preventDefault();
+  if (!recoveryToken || button.disabled) return;
+  const password=document.getElementById('new-password');
+  const repeat=document.getElementById('repeat-password');
+  if (password.value.length < 12) {status.textContent='Кемінде 12 таңба енгізіңіз.';return;}
+  if (password.value !== repeat.value) {status.textContent='Екі құпиясөз бірдей болуы керек.';return;}
+  button.disabled=true;
+  try {
+    await authRequest('PUT', {password:password.value});
+    password.value='';repeat.value='';recoveryToken=null;form.hidden=true;
+    status.textContent='Құпиясөз жаңартылды! Төмендегі сілтемемен ұйымдастырушы кабинетіне өтіп, email мен жаңа құпиясөзді енгізіңіз.';
+  } catch(e) {status.textContent=e.message;}
+  finally {button.disabled=false;}
+};
+initialize();
+</script></body></html>
